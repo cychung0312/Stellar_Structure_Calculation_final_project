@@ -21,14 +21,9 @@ def calculate_stellar_density(P, T, X, Y, Z):
     # 2. Calculate Radiation Pressure
     P_rad = (1.0/3.0) * a * T**4
     
-    if P_rad >= 0.9999 * P: 
-        # We are at or exceeding the Eddington Limit
-        beta = 1e-4 
-        P_gas = beta * P 
-    else:
-        P_gas = P - P_rad
-        beta = P_gas / P
-
+    P_gas = np.maximum(P - P_rad, 1e-5 * P) 
+    beta = P_gas / P
+    
     # 4. Calculate Density from Gas Pressure: P_gas = (rho * k * T) / (mu * m_H)
     rho = (P_gas * mu * m_H) / (k * T)
     
@@ -62,7 +57,6 @@ def create_interpolator(logT_d, logR_d, logK_d):
     uR = np.unique(logR_d)
     
     # Reshape the 1D opacity data into a 2D grid
-    # This assumes your popI_op.txt is a full grid
     K_grid = logK_d.reshape(len(uT), len(uR))
     
     # Create the spline object (kx=1, ky=1 is linear and very stable)
@@ -82,10 +76,6 @@ def calculate_epsilon(rho, T, X, Y, Z):
     """
     Calculates nuclear energy generation rate (erg/g/s) for H-burning.
     """
-    # Immediate return for cold/empty regions
-    if T < 1e6 or rho < 1e-10:
-        return 0.0, 0.0
-    
     T7 = T / 1e7
     T9 = T / 1e9
     
@@ -167,47 +157,23 @@ def load2(L_star, R_star, M_star, X, Y, Z):
     r = R_star
 
     # 2. Temperature at tau = 2/3 is Teff (per Eddington approx)
-    g = (G * M_star) / (R_star**2)
     T_eff = (L_star / (4.0 * np.pi * (R_star**2) * sigma_sb))**0.25
     T = T_eff
 
-    # 3. Define the Atmospheric ODE (dP/dtau)
-    def atmosphere_deriv(tau, P):
-        # Eddington approximation for temperature gradient
-        T_tau = T_eff * (0.75 * (tau + 2/3))**0.25
-        # Stability: avoid non-physical pressures during solver steps
-        current_P = max(P[0], 1e-10)
-        # Optimization: Use an analytical EOS if possible for the atmosphere 
-        # instead of a full iterative solver to get rho
-        rho, beta = calculate_stellar_density(current_P, T_tau, X, Y, Z)
-        # Interpolate opacity for local T and P
-        kappa = get_interpolated_kappa(np.log10(rho), np.log10(T_tau))
-        return [g / kappa]
-
-    # 4. Integrate from tau ~ 0 to tau = 2/3
-    sol = solve_ivp(
-        atmosphere_deriv, 
-        (1e-4, 2/3),   
-        [1e-4],         # Starting at 1.0 dyne/cm^2 (more typical for solar surface)
-#        method='Radau', # Better for the steep T^9 H-minus opacity gradient
-        rtol=1e-6      
-    )
-
-    # 5. Resulting pressure at the photosphere (tau = 2/3)
-    P = sol.y[0][-1]
-
     # Simple fixed-point iteration to find consistent P and kappa
+    g = (G * M_star) / (R_star**2)
     P_surf = 1.0e4 # Initial guess
     for i in range(15):
-        rho, _ = calculate_stellar_density(P_surf, T_eff, X, Y, Z)
-        kappa = get_interpolated_kappa(np.log10(rho), np.log10(T_eff))
+        rho, _ = calculate_stellar_density(P_surf, T, X, Y, Z)
+        kappa = get_interpolated_kappa(np.log10(rho), np.log10(T))
         
         # Eq 11.13: P = (g * tau) / kappa, with tau = 2/3
         new_P = (2.0/3.0) * (g / kappa)
-        
-        if np.abs((new_P - P_surf) / P_surf) < 1e-7:
+
+        if np.abs((new_P - P_surf) / P_surf) < 1e-8:
             break
         P_surf = new_P
+
     P = P_surf 
     return np.array([P, T, r, l])
 
@@ -248,10 +214,8 @@ def derivs(m, y, X, Y, Z):
     # Adiabatic gradient (Assumes fully ionized ideal gas)
     nabla_ad = 0.4 
     
-    if nabla_rad > nabla_ad:
-        nabla = nabla_ad
-    else:
-        nabla = nabla_rad
+    # Schwarzschild Criterion
+    nabla = np.minimum(nabla_rad, nabla_ad)
     dT_dm = -(G * m * T) / (4.0 * np.pi * (r**4) * P) * nabla
 
     return np.array([dP_dm, dT_dm, dr_dm, dl_dm])
@@ -262,51 +226,70 @@ def shootf(vec, M_star, X, Y, Z, m_fit_frac=0.5):
     Computes the difference between core and surface integrations at m_fit.
     vec = [log(Pc), log(Tc), log(R_star), log(L_star)]
     """
+#    vec = np.clip(vec, 
+#                  [10.0, 5.0, 9.0, 30.0],   # Lower bounds (M-dwarfs)
+#                  [20.0, 8.5, 13.0, 40.0])
+    
     # 1. Unpack and delog guesses (using logs helps Newton-Raphson stability)
     Pc, Tc = 10**vec[0], 10**vec[1]
     R_star, L_star = 10**vec[2], 10**vec[3]
-    
+
     m_fit = m_fit_frac * M_star
     m_eps = 1e-10 * M_star # Small offset from center to avoid 1/r singularity
-    
-    # 2. Outward Integration (Center -> Fitting Point)
-    y_core_start = load1(m_eps, Pc, Tc, X, Y, Z)
-    sol_core = solve_ivp(derivs, (m_eps, m_fit), y_core_start, 
+
+    try:
+        # 2. Outward Integration (Center -> Fitting Point)
+        y_core_start = load1(m_eps, Pc, Tc, X, Y, Z)
+        sol_core = solve_ivp(derivs, (m_eps, m_fit), y_core_start, 
                          args=(X, Y, Z), 
-                         method='Radau', rtol=1e-8)
+                         method='Radau', rtol=1e-10)
     
-    # 3. Inward Integration (Surface -> Fitting Point)
-    y_surf_start = load2(L_star, R_star, M_star, X, Y, Z)
+        # 3. Inward Integration (Surface -> Fitting Point)
+        y_surf_start = load2(L_star, R_star, M_star, X, Y, Z)
 
-    print(f"DEBUG: P_surf = {y_surf_start[0]:.2e} | P_core_at_fit = {sol_core.y[0,-1]:.2e}")
-
-    sol_surf = solve_ivp(derivs, (M_star, m_fit), y_surf_start, 
+        sol_surf = solve_ivp(derivs, (M_star, m_fit), y_surf_start, 
                          args=(X, Y, Z), 
-                         method='Radau', rtol=1e-8)
+                         method='Radau', rtol=1e-10)
     
-    # 4. Check for failures
-    if not sol_core.success or not sol_surf.success:
-        return np.array([1e10]*4) # Return large penalty for bad guesses
+        print(f"DEBUG: P_surf = {y_surf_start[0]:.2e} | P_core = {y_core_start[0]:.2e}")
+        print(f"DEBUG: T_surf = {y_surf_start[1]:.2e} | T_core = {y_core_start[1]:.2e}")
 
-    # 5. Calculate Residuals [P, T, r, l]
-    # We normalize by the surface guesses to make the error dimensionless
-    res = (sol_core.y[:, -1] - sol_surf.y[:, -1]) / sol_core.y[:, -1]
-    res = np.zeros(4)
-    res[0] = (sol_core.y[0, -1] - sol_surf.y[0, -1]) / sol_core.y[0, -1]   # Pressure (Boosted)
-    res[1] = (sol_core.y[1, -1] - sol_surf.y[1, -1]) / sol_core.y[1, -1]   # Temperature (Boosted)
-    res[2] = (sol_core.y[2, -1] - sol_surf.y[2, -1]) / (R_sun)   # Radius
-    res[3] = (sol_core.y[3, -1] - sol_surf.y[3, -1]) / (L_sun)   # Luminosity
-    return res
+        print(f"DEBUG: P_surf_at_fit = {sol_surf.y[0,-1]:.2e} | P_core_at_fit = {sol_core.y[0,-1]:.2e}")
+        print(f"DEBUG: T_surf_at_fit = {sol_surf.y[1,-1]:.2e} | T_core_at_fit = {sol_core.y[1,-1]:.2e}")
+
+    
+        # 4. Check for failures
+        if not sol_core.success or not sol_surf.success:
+            # Return a massive penalty to tell the solver "wrong direction"
+            return np.array([1e15, 1e15, 1e15, 1e15])
+    
+        # 5. Calculate Residuals [P, T, r, l]
+        # We normalize by the surface guesses to make the error dimensionless
+        res = (sol_core.y[:, -1] - sol_surf.y[:, -1]) / sol_core.y[:, -1]
+        res = np.zeros(4)
+        res[0] = (sol_core.y[0, -1] - sol_surf.y[0, -1]) / sol_core.y[0, -1] # Pressure
+        res[1] = (sol_core.y[1, -1] - sol_surf.y[1, -1]) / sol_core.y[1, -1] # Temperature
+        res[2] = (sol_core.y[2, -1] - sol_surf.y[2, -1]) / R_sun
+        res[3] = (sol_core.y[3, -1] - sol_surf.y[3, -1]) / L_sun
+        if np.isnan(res).any():
+            return np.array([1e15, 1e15, 1e15, 1e15])
+        else: 
+            return res
+        
+    except Exception:
+        return np.array([1e15] * 4)
 
 def run_solver(M_star, init_guess, X, Y, Z):
 
     # initial guess: [log_Pc, log_Tc, log_R_star, log_L_star]
        
-    result = root(shootf, init_guess, args=(M_star, X, Y, Z), 
-              method='hybr', 
-              tol=1e-12, 
-              options={'xtol': 1e-12})
+    method_choice = 'hybr' if M_star < 0.7 else 'lm'
+    opts = {'xtol': 1e-10} if method_choice == 'hybr' else {'ftol': 1e-10, 'xtol': 1e-10}
     
+    result = root(shootf, init_guess, args=(M_star, X, Y, Z), 
+                  method=method_choice, 
+                  options=opts)
+        
     if result.success:
         print("Convergence Successful!")
         return 10**result.x
@@ -325,7 +308,7 @@ def get_homology_guess(M_star):
     m_ratio = M_star / M_sun
     
     # Scale based on 1.0 M_sun success values
-    Pc = 2.47e17 * (m_ratio**-2)
+    Pc = 2.47e17 * (m_ratio**(-2))
     Tc = 1.57e7  * (m_ratio**0.5)
     R  = 0.8 * R_sun * (m_ratio**0.7)
     L  = 0.8 * L_sun * (m_ratio**3.5) # Mass-Luminosity relation
@@ -422,85 +405,3 @@ if final_params is not None:
 else:
     print("\n[!] Convergence failed. No results to display.")
 
-import matplotlib.pyplot as plt
-import pandas as pd
-
-# Load your specific model data
-df = pd.read_csv(filename)
-r_norm = df['r'] / df['r'].max()
-
-# --- Figure 1: Global Structure ---
-plt.figure(figsize=(8, 6))
-plt.plot(r_norm, df['P']/df['P'].max(), label='Pressure ($P/P_c$)')
-plt.plot(r_norm, df['T']/df['T'].max(), label='Temperature ($T/T_c$)')
-plt.plot(r_norm, df['m']/df['m'].max(), label='Mass ($m/M_*$)')
-plt.plot(r_norm, df['l']/df['l'].max(), label='Luminosity ($l/L_*$)')
-plt.xlabel('$r/R_*$')
-plt.ylabel('Normalized Value')
-plt.title('Internal Structure Profile')
-plt.legend()
-plt.grid(True, alpha=0.3)
-plt.savefig(f'structure_profile_{M_star/M_sun:.1f}Msun.png')
-
-# --- Figure 2: Energy & Opacity ---
-fig, ax1 = plt.subplots(figsize=(8, 6))
-ax2 = ax1.twinx()
-ax1.plot(df['m']/df['m'].max(), df['epsilon'], 'r-', label='$\epsilon$ (Energy)')
-ax2.plot(r_norm, np.log10(df['kappa']), 'b--', label='$\log_{10}(\kappa)$')
-ax1.set_xlabel('$m/M_*$')
-ax1.set_ylabel('$\epsilon$ (erg/g/s)', color='r')
-ax2.set_ylabel('$\log_{10}(\kappa)$', color='b')
-plt.title('Energy Generation and Opacity')
-plt.savefig(f'energy_opacity_{M_star/M_sun:.1f}Msun.png')
-
-# --- Figure 3: Stability ---
-plt.figure(figsize=(8, 6))
-plt.plot(r_norm, df['grad_rad'], 'r-', label='$\nabla_{rad}$')
-plt.plot(r_norm, df['grad_ad'], 'b--', label='$\nabla_{ad}$')
-plt.fill_between(r_norm, df['grad_rad'], df['grad_ad'], 
-                 where=(df['grad_rad'] > df['grad_ad']), 
-                 color='gray', alpha=0.3, label='Convective Zone')
-plt.ylim(0, 1) # Focus on the physical range
-plt.xlabel('$r/R_*$')
-plt.ylabel(r'$\nabla$')
-plt.title('Schwarzschild Stability Criterion')
-plt.legend()
-plt.savefig(f'stability_gradient_{M_star/M_sun:.1f}Msun.png')
-
-def print_latex_summary(M_star, final_params, df):
-    """
-    Prints a LaTeX-formatted table summary for the stellar model.
-    """
-    Pc, Tc, R_star, L_star = final_params
-    
-    print("\n% --- LaTeX Table Summary for {} M_sun ---".format(M_star/M_sun))
-    print(r"\begin{table}[h]")
-    print(r"\centering")
-    print(r"\begin{tabular}{lcccccc}")
-    print(r"\hline")
-    print(r"Region & $m/M_*$ & $r/R_*$ & $\rho$ (g/cm$^3$) & $T$ (K) & $P$ (dyn/cm$^2$) & Nature \\")
-    print(r"\hline")
-    
-    # Select key indices: Core, 10%, Fitting Point, 90%, Surface
-    indices = [
-    0,                          # Center
-    len(df) // 4,               # 25% Mass (Inside convective core for 2.0M)
-    len(df) // 2,               # 50% Mass (Fitting Point)
-    int(len(df) * 0.75),        # 75% Mass (Radiative Envelope)
-    -1                          # Photosphere
-    ]
-    labels = ["Center", "Inner Core", "Fit Point", "Envelope", "Photosphere"]
-    
-    for idx, label in zip(indices, labels):
-        row = df.iloc[idx]
-        print(f"{label} & {row['m']/M_star:.2f} & {row['r']/R_star:.2f} & "
-              f"{row['rho']:.2e} & {row['T']:.2e} & {row['P']:.2e} & {row['nature']} \\\\")
-        
-    print(r"\hline")
-    print(r"\end{tabular}")
-    print(r"\caption{Internal structure summary for a " + f"{M_star/M_sun:.1f} " + r"$M_\odot$ model.}")
-    print(r"\end{table}")
-
-# Call the function after your solver and table generation
-if final_params is not None:
-    print_latex_summary(M_star, final_params, df)
