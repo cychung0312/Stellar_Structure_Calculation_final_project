@@ -26,11 +26,12 @@ plt.savefig(f'structure_profile_{M_star/M_sun:.1f}Msun.png')
 # --- Figure 2: Energy & Opacity ---
 fig, ax1 = plt.subplots(figsize=(8, 6))
 ax2 = ax1.twinx()
-ax1.plot(df['m']/df['m'].max(), df['epsilon'], 'r-', label='$\epsilon$ (Energy)')
-ax2.plot(r_norm, np.log10(df['kappa']), 'b--', label='$\log_{10}(\kappa)$')
+# Use r'...' for raw strings
+ax1.plot(df['m']/df['m'].max(), df['epsilon'], 'r-', label=r'$\epsilon$ (Energy)')
+ax2.plot(r_norm, np.log10(df['kappa']), 'b--', label=r'$\log_{10}(\kappa)$')
+ax1.set_ylabel(r'$\epsilon$ (erg/g/s)', color='r')
+ax2.set_ylabel(r'$\log_{10}(\kappa)$', color='b')
 ax1.set_xlabel('$m/M_*$')
-ax1.set_ylabel('$\epsilon$ (erg/g/s)', color='r')
-ax2.set_ylabel('$\log_{10}(\kappa)$', color='b')
 plt.title('Energy Generation and Opacity')
 plt.savefig(f'energy_opacity_{M_star/M_sun:.1f}Msun.png')
 

@@ -92,9 +92,6 @@ def calculate_epsilon(rho, T, X, Y, Z):
     
     # 2. pp-Chain Energy Generation (KWW Eq 18.63)
     psi = 1.0       # branching factor (approx 1 for T < 2e7 K).
-    if T7 > 1.0: psi = 1.2
-    if T7 > 2.0: psi = 1.5
-
     g11 = (1 + 3.82*T9 + 1.51*T9**2 + 0.144*T9**3 - 0.0114*T9**4)
     eps_pp = 2.57e4 * psi * f11 * g11 * rho * X**2 * (T9**(-2/3)) * np.exp(-3.381 / (T9**(1/3)))
 
@@ -162,9 +159,11 @@ def load2(L_star, R_star, M_star, X, Y, Z):
 
     # Simple fixed-point iteration to find consistent P and kappa
     g = (G * M_star) / (R_star**2)
-    P_surf = 1.0e4 # Initial guess
+    P_surf = 1.0e5 # Initial guess
     for i in range(15):
-        rho, _ = calculate_stellar_density(P_surf, T, X, Y, Z)
+        inv_mu = 1.0 * X + 0.25 * Y # Approximation for neutral gas
+        mu = 1.0 / inv_mu
+        rho = (P_surf * mu * m_H) / (k * T)
         kappa = get_interpolated_kappa(np.log10(rho), np.log10(T))
         
         # Eq 11.13: P = (g * tau) / kappa, with tau = 2/3
@@ -221,7 +220,7 @@ def derivs(m, y, X, Y, Z):
     return np.array([dP_dm, dT_dm, dr_dm, dl_dm])
 
 
-def shootf(vec, M_star, X, Y, Z, m_fit_frac=0.5):
+def shootf(vec, M_star, X, Y, Z, m_fit_frac=0.6):
     """
     Computes the difference between core and surface integrations at m_fit.
     vec = [log(Pc), log(Tc), log(R_star), log(L_star)]
@@ -367,10 +366,10 @@ if final_params is not None:
         G = 6.67430e-8
         
         # Avoid division by zero at the center for nabla_rad
-        if m < 1e-5 * M_star:
-            nabla_rad = (3.0 * kappa * epsilon * P) / (16.0 * np.pi * a_rad * c_light * G * T**4)
-        else:
-            nabla_rad = (3.0 * kappa * l * P) / (16.0 * np.pi * a_rad * c_light * G * m * T**4)
+#        if m < 1e-5 * M_star:
+#            nabla_rad = (3.0 * kappa * epsilon * P) / (16.0 * np.pi * a_rad * c_light * G * T**4)
+#        else:
+        nabla_rad = (3.0 * kappa * l * P) / (16.0 * np.pi * a_rad * c_light * G * m * T**4)
         
         nabla_ad = 0.4
         nabla_act = min(nabla_rad, nabla_ad)
