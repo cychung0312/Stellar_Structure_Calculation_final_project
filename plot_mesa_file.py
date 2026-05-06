@@ -40,13 +40,13 @@ print(f"Total Luminosity (L):     {total_l:.4f} Lsun")
 print(f"Total Radius (R):         {total_r:.4f} Rsun")
 print(f"Effective Temp (Teff):    {teff_mesa:.2f} K")
 
-# 3. Quick Comparison with your Derived Values
-my_tc = 1.3466e+07
-my_pc = 1.4960e+17
-my_rhoc = 83.1
-my_Teff = 4683.8
-my_R = 1.2818
-my_L = 0.7124
+# 3. Quick Comparison 
+my_tc = 2.0303e+07
+my_pc = 1.5264e+17
+my_rhoc = 56.09311
+my_Teff = 8753.9
+my_R = 1.6889
+my_L = 15.0896
 
 print(f"\n--- Comparison Residuals ---")
 print(f"Tc Difference: {abs(tc_mesa - my_tc)/tc_mesa * 100:.2f}%")
