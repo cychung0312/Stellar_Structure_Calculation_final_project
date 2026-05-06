@@ -5,7 +5,7 @@ M_sun = 1.989e33
 L_sun = 3.828e33
 R_sun = 6.957e10
 
-M_star = 1.0 * M_sun
+M_star = 2.0 * M_sun
 filename = f"stellar_profile_{M_star/M_sun:.1f}Msun.csv"
 df = pd.read_csv(filename)
 r_norm = df['r'] / df['r'].max()
